@@ -30,22 +30,26 @@ class PaddyDataloader:
         self.num_classes = len(self.class_names)
 
     def _setup_transforms(self):
+        """Defines the training and validation transformations."""
         imagenet_mean = [0.485, 0.456, 0.406]
         imagenet_std = [0.229, 0.224, 0.225]
 
+        # calculate a slightly larger size for the initial resize
+        intermediate_size = int(self.img_size * 1.1)
+
         self.train_transform = transforms.Compose(
             [
-                transforms.Resize((256, 256)),  # resize to a larger size
+                transforms.Resize((intermediate_size, intermediate_size)),
                 transforms.RandomResizedCrop(self.img_size, scale=(0.8, 1.0)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomRotation(20),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomRotation(degrees=20),
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-                transforms.Resize((self.img_size, self.img_size)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
             ]
         )
 
+        # Validation transform is also updated
         self.val_transform = transforms.Compose(
             [
                 transforms.Resize((self.img_size, self.img_size)),
