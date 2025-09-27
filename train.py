@@ -29,7 +29,12 @@ def main(args):
 
     criterion = nn.CrossEntropyLoss()
 
-    optimizer = torch.optim.Adam(model.base_model.fc.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(
+        [
+            {"params": model.base_model.layer4.parameters(), "lr": args.lr_backbone},
+            {"params": model.base_model.fc.parameters(), "lr": args.lr_fc},
+        ]
+    )
 
     best_val_acc = 0.0
 
@@ -88,7 +93,8 @@ if __name__ == "__main__":
         "--epochs", type=int, default=10, help="Number of training epochs"
     )
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--lr_fc", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--lr_backbone", type=float, default=1e-5, help="Learning rate")
     parser.add_argument(
         "--image_size", type=int, default=224, help="Input image size(height and width)"
     )

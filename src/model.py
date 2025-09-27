@@ -12,6 +12,9 @@ class PaddyResNet(nn.Module):
         for param in self.base_model.parameters():
             param.requires_grad = False
 
+        for param in self.base_model.layer4.parameters():
+            param.requires_grad = True
+
         in_features = self.base_model.fc.in_features
         self.base_model.fc = nn.Linear(in_features, num_classes)
 
