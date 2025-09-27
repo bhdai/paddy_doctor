@@ -35,6 +35,8 @@ class PaddyDataloader:
 
         self.train_transform = transforms.Compose(
             [
+                transforms.Resize((256, 256)),  # resize to a larger size
+                transforms.RandomResizedCrop(self.img_size, scale=(0.8, 1.0)),
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomRotation(20),
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
