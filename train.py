@@ -35,6 +35,12 @@ def main(args):
             {"params": model.base_model.fc.parameters(), "lr": args.lr_fc},
         ]
     )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.1,
+        patience=3,
+    )
 
     best_val_acc = 0.0
 
@@ -44,6 +50,7 @@ def main(args):
             model, train_loader, criterion, optimizer, device
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+        scheduler.step(val_loss)
 
         print(f"  Train loss: {train_loss:.4f}, Train acc: {train_acc:.4f}")
         print(f"  Val loss: {val_loss:.4f}, Val acc: {val_acc:.4f}")
