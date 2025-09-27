@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from typing import Tuple
+from torch.amp import autocast
 
 
 def train_one_epoch(
@@ -11,6 +12,8 @@ def train_one_epoch(
     loss_fn: nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    scaler: torch.amp.GradScaler,
+    mixed_precision: bool,
 ):
     model.train()
     running_loss = 0.0
@@ -22,14 +25,20 @@ def train_one_epoch(
     for images, labels in progress_bar:
         images, labels = images.to(device), labels.to(device)
 
-        # forward pass
-        ouputs = model(images)
-        loss = loss_fn(ouputs, labels)
+        with autocast(
+            device_type="cuda" if torch.cuda.is_available() else "cpu",
+            enabled=mixed_precision,
+        ):
+            # forward pass
+            ouputs = model(images)
+            loss = loss_fn(ouputs, labels)
 
         # backward pass and optim
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        # loss.backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         running_loss += loss.item() * images.size(0)
         _, preds = torch.max(ouputs, 1)
@@ -49,6 +58,7 @@ def evaluate(
     dataloader: DataLoader,
     loss_fn: nn.Module,
     device: torch.device,
+    mixed_precision: bool,
 ):
     model.eval()
     running_loss = 0.0
@@ -60,8 +70,12 @@ def evaluate(
     with torch.no_grad():
         for images, labels in progress_bar:
             images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            loss = loss_fn(outputs, labels)
+            with autocast(
+                device_type="cuda" if torch.cuda.is_available() else "cpu",
+                enabled=mixed_precision,
+            ):
+                outputs = model(images)
+                loss = loss_fn(outputs, labels)
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(outputs, 1)
             correct += (preds == labels).sum().item()

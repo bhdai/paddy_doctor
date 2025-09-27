@@ -2,6 +2,7 @@ import os
 import torch
 import argparse
 import torch.nn as nn
+from torch.amp import GradScaler, autocast
 from src.dataset import PaddyDataloader
 from src.model import PaddyResNet
 from src.engine import train_one_epoch, evaluate
@@ -13,6 +14,7 @@ def main(args):
         wandb.init(project="paddy_doctor", config=args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    print(f"Using mixed precision: {args.mixed_precision}")
 
     data = PaddyDataloader(
         data_dir=args.data_dir,
@@ -41,15 +43,28 @@ def main(args):
         factor=0.1,
         patience=3,
     )
+    # Only create scaler if mixed precision is enabled
+    scaler = GradScaler(
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        enabled=args.mixed_precision,
+    )
 
     best_val_acc = 0.0
 
     for epoch in range(args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            device,
+            scaler,
+            args.mixed_precision,
         )
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+        val_loss, val_acc = evaluate(
+            model, val_loader, criterion, device, args.mixed_precision
+        )
         scheduler.step(val_loss)
 
         print(f"  Train loss: {train_loss:.4f}, Train acc: {train_acc:.4f}")
@@ -113,6 +128,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--no_wandb", action="store_true", help="Disable Weights & Biases logging"
+    )
+    parser.add_argument(
+        "--mixed-precision",
+        action="store_true",
+        help="Enable mixed precision training",
     )
 
     args = parser.parse_args()
