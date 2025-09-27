@@ -1,0 +1,106 @@
+import os
+import torch
+import argparse
+import torch.nn as nn
+from src.dataset import PaddyDataloader
+from src.model import PaddyResNet
+from src.engine import train_one_epoch, evaluate
+import wandb
+
+
+def main(args):
+    if not args.no_wandb:
+        wandb.init(project="paddy_doctor", config=args)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    data = PaddyDataloader(
+        data_dir=args.data_dir,
+        batch_size=args.batch_size,
+        img_size=args.image_size,
+        num_workers=args.num_workers,
+    )
+
+    train_loader, val_loader = data.get_loaders()
+    num_classes = data.num_classes
+    print(f"Number of classes: {num_classes}")
+
+    model = PaddyResNet(num_classes=num_classes).to(device)
+
+    criterion = nn.CrossEntropyLoss()
+
+    optimizer = torch.optim.Adam(model.base_model.fc.parameters(), lr=args.lr)
+
+    best_val_acc = 0.0
+
+    for epoch in range(args.epochs):
+        print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, criterion, optimizer, device
+        )
+        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+
+        print(f"  Train loss: {train_loss:.4f}, Train acc: {train_acc:.4f}")
+        print(f"  Val loss: {val_loss:.4f}, Val acc: {val_acc:.4f}")
+
+        if not args.no_wandb:
+            wandb.log(
+                {
+                    "train_loss": train_loss,
+                    "train_acc": train_acc,
+                    "val_loss": val_loss,
+                    "val_acc": val_acc,
+                    "epoch": epoch + 1,
+                }
+            )
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            os.makedirs(args.output_dir, exist_ok=True)
+            save_path = os.path.join(args.output_dir, "best_model.pth")
+            torch.save(model.state_dict(), save_path)
+            print(
+                f" -> New best model saved to {save_path} with Val Acc: {best_val_acc:.4f}"
+            )
+
+    print(f"\nTraining complete. Best validation accuracy: {best_val_acc:.4f}")
+    if not args.no_wandb:
+        wandb.finish()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Train a Paddy Disease Classification model"
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        required=True,
+        help="Path to the dataset directory ('.data/paddy_data')",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./output/saved_models",
+        help="Directory to save the best model",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=10, help="Number of training epochs"
+    )
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument(
+        "--image_size", type=int, default=224, help="Input image size(height and width)"
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=os.cpu_count(),
+        help="Number of workers for data loading",
+    )
+    parser.add_argument(
+        "--no_wandb", action="store_true", help="Disable Weights & Biases logging"
+    )
+
+    args = parser.parse_args()
+    main(args)
