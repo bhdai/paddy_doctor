@@ -2,6 +2,7 @@ import os
 import random
 import shutil
 import argparse
+from tqdm import tqdm
 
 
 def main(source_dir, dest_dir, train_ratio):
@@ -16,7 +17,7 @@ def main(source_dir, dest_dir, train_ratio):
         d for d in os.listdir(source_dir) if os.path.isdir(os.path.join(source_dir, d))
     ]
 
-    for class_name in class_names:
+    for class_name in tqdm(class_names, desc="Processing classes"):
         class_source_dir = os.path.join(source_dir, class_name)
         images_files = [f for f in os.listdir(class_source_dir) if f.endswith(".jpg")]
         random.shuffle(images_files)
@@ -30,18 +31,22 @@ def main(source_dir, dest_dir, train_ratio):
         os.makedirs(train_class_dir, exist_ok=True)
         os.makedirs(val_class_dir, exist_ok=True)
 
-        for f in train_files:
+        for f in tqdm(
+            train_files, desc=f"Copying train files for {class_name}", leave=False
+        ):
             src_path = os.path.join(class_source_dir, f)
             dst_path = os.path.join(train_class_dir, f)
             shutil.copy(src_path, dst_path)
 
-        for f in val_files:
+        for f in tqdm(
+            val_files, desc=f"Copying val files for {class_name}", leave=False
+        ):
             src_path = os.path.join(class_source_dir, f)
             dst_path = os.path.join(val_class_dir, f)
             shutil.copy(src_path, dst_path)
 
     print(
-        f"Data successfully split into {train_ratio * 100:.0f}% train and {(train_ratio) * 100:.0f}% validation sets"
+        f"Data successfully split into {train_ratio * 100:.0f}% train and {(1 - train_ratio) * 100:.0f}% validation sets"
     )
 
 
