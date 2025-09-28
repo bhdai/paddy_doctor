@@ -56,8 +56,8 @@ def main(args):
         for param in model.parameters():
             param.requires_grad = True
 
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=args.lr_full, weight_decay=1e-4
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=args.lr_full, weight_decay=args.weight_decay
         )
     else:
         print("RUNNING IN FEATURE EXTRACTION / HEAD-TUNING MODE")
@@ -65,14 +65,14 @@ def main(args):
         for param in model.backbone.layer4.parameters():
             param.requires_grad = True
 
-        optimizer = torch.optim.AdamW(
+        optimizer = torch.optim.Adam(
             [
                 {"params": model.backbone.layer4.parameters(), "lr": args.lr_backbone},
                 {"params": model.variety_embedding.parameters(), "lr": args.lr_fc},
                 {"params": model.age_processor.parameters(), "lr": args.lr_fc},
                 {"params": model.classifier.parameters(), "lr": args.lr_fc},
             ],
-            weight_decay=1e-4,
+            weight_decay=args.weight_decay,
         )
 
     model = model.to(device)
@@ -222,6 +222,12 @@ if __name__ == "__main__":
         type=float,
         default=5e-6,
         help="Learning rate for the entire model for full fine-tuning",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=1e-4,
+        help="Weight decay for the optimizer",
     )
 
     args = parser.parse_args()
