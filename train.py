@@ -92,7 +92,7 @@ def main(args):
             optimizer,
             mode="min",
             factor=0.1,
-            patience=3,
+            patience=6,
         )
 
     # only create scaler if mixed precision is enabled
