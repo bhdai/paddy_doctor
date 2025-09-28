@@ -71,7 +71,7 @@ def main(args):
 
         optimizer = torch.optim.Adam(
             [
-                {"params": model.backbone.fc(), "lr": args.lr_head},
+                {"params": model.backbone.fc.parameters(), "lr": args.lr_head},
             ],
             weight_decay=args.weight_decay,
         )
