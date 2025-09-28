@@ -103,7 +103,6 @@ def main(args):
 
     best_val_loss = float("inf")
     patience_counter = 0
-    patience = 5
 
     for epoch in range(args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
@@ -121,10 +120,8 @@ def main(args):
             model, val_loader, criterion, device, args.mixed_precision
         )
 
-        # For ReduceLROnPlateau, step on validation loss
         if not args.full_finetune:
             scheduler.step(val_loss)
-        # For CosineAnnealingLR, the step is handled within train_one_epoch
 
         print(f"  Train loss: {train_loss:.4f}, Train acc: {train_acc:.4f}")
         print(f"  Val loss: {val_loss:.4f}, Val acc: {val_acc:.4f}")
@@ -150,12 +147,12 @@ def main(args):
         else:
             patience_counter += 1
             print(
-                f" -> Val loss did not improved. Early stoping counter {patience_counter}/{patience}"
+                f" -> Val loss did not improved. Early stoping counter {patience_counter}/{args.patience}"
             )
 
-        if patience_counter >= patience:
+        if patience_counter >= args.patience:
             print(
-                f"\nStoping earlier as validation loss has not improved for {patience} epochs."
+                f"\nStoping earlier as validation loss has not improved for {args.patience} epochs."
             )
             break
 
@@ -228,6 +225,12 @@ if __name__ == "__main__":
         type=float,
         default=1e-4,
         help="Weight decay for the optimizer",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=5,
+        help="Patience for early stopping",
     )
 
     args = parser.parse_args()
