@@ -23,11 +23,9 @@ def train_one_epoch(
 
     progress_bar = tqdm(dataloader, desc="Training")
 
-    for images, variety_idx, age, labels in progress_bar:
-        images, variety_idx, age, labels = (
+    for images, labels in progress_bar:
+        images, labels = (
             images.to(device),
-            variety_idx.to(device),
-            age.to(device),
             labels.to(device),
         )
 
@@ -36,7 +34,7 @@ def train_one_epoch(
             enabled=mixed_precision,
         ):
             # forward pass
-            ouputs = model(images, variety_idx, age)
+            ouputs = model(images)
             loss = loss_fn(ouputs, labels)
 
         # backward pass and optim
@@ -79,18 +77,16 @@ def evaluate(
     progress_bar = tqdm(dataloader, desc="Evaluating")
 
     with torch.no_grad():
-        for images, variety_idx, age, labels in progress_bar:
-            images, variety_idx, age, labels = (
+        for images, labels in progress_bar:
+            images, labels = (
                 images.to(device),
-                variety_idx.to(device),
-                age.to(device),
                 labels.to(device),
             )
             with autocast(
                 device_type="cuda" if torch.cuda.is_available() else "cpu",
                 enabled=mixed_precision,
             ):
-                outputs = model(images, variety_idx, age)
+                outputs = model(images)
                 loss = loss_fn(outputs, labels)
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(outputs, 1)

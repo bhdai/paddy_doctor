@@ -5,7 +5,7 @@ import torch.nn as nn
 import pandas as pd
 from torch.amp import GradScaler, autocast
 from src.dataset import PaddyDataloader
-from src.model import PaddyMultimodalNet
+from src.model import PaddyResNet
 from src.engine import train_one_epoch, evaluate
 import wandb
 
@@ -17,20 +17,8 @@ def main(args):
     print(f"Using device: {device}")
     print(f"Using mixed precision: {args.mixed_precision}")
 
-    print("Prepare metadata and data split...")
-    metadata_df = pd.read_csv(args.csv_path)
-
-    # map each variety to an integer
-    varieties = metadata_df["variety"].unique()
-    variety_map = {v: i for i, v in enumerate(varieties)}
-    metadata_df["variety_idx"] = metadata_df["variety"].map(variety_map)
-    num_varieties = len(varieties)
-    # set image_id as index for fast lookups
-    metadata_df.set_index("image_id", inplace=True)
-
     data = PaddyDataloader(
-        processed_data_dir=args.data_dir,
-        metadata_df=metadata_df,
+        data_dir=args.data_dir,
         batch_size=args.batch_size,
         img_size=args.image_size,
         num_workers=args.num_workers,
@@ -40,7 +28,8 @@ def main(args):
     num_classes = data.num_classes
     print(f"Number of classes: {num_classes}")
 
-    model = PaddyMultimodalNet(num_classes=num_classes, num_varieties=num_varieties)
+    model = PaddyResNet(num_classes=num_classes)
+    model = model.to(device)
 
     if args.full_finetune:
         print("RUNNING IN FULL FINE-TUNING MODE")
@@ -59,8 +48,18 @@ def main(args):
         optimizer = torch.optim.Adam(
             model.parameters(), lr=args.lr_full, weight_decay=args.wd_full
         )
+
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.epochs * len(train_loader),
+            eta_min=1e-7,  # minimum learning rate
+        )
+        print("Using CosineAnnealingLR scheduler.")
     else:
-        print("RUNNING IN FEATURE EXTRACTION / HEAD-TUNING MODE")
+        print("RUNNING IN HEAD-TUNING MODE")
+
+        for param in model.backbone.parameters():
+            param.requires_grad = False
 
         for param in model.backbone.layer4.parameters():
             param.requires_grad = True
@@ -68,32 +67,20 @@ def main(args):
         optimizer = torch.optim.Adam(
             [
                 {"params": model.backbone.layer4.parameters(), "lr": args.lr_backbone},
-                {"params": model.variety_embedding.parameters(), "lr": args.lr_fc},
-                {"params": model.age_processor.parameters(), "lr": args.lr_fc},
-                {"params": model.classifier.parameters(), "lr": args.lr_fc},
+                {"params": model.backbone.fc.parameters(), "lr": args.lr_fc},
             ],
             weight_decay=args.weight_decay,
         )
 
-    model = model.to(device)
-
-    criterion = nn.CrossEntropyLoss()
-
-    if args.full_finetune:
-        print("Using CosineAnnealingLR scheduler.")
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=args.epochs * len(train_loader),
-            eta_min=1e-7,  # minimum learning rate
-        )
-    else:
-        print("Using ReduceLROnPlateau scheduler.")
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode="min",
             factor=0.1,
             patience=6,
         )
+        print("Using ReduceLROnPlateau scheduler.")
+
+    criterion = nn.CrossEntropyLoss()
 
     # only create scaler if mixed precision is enabled
     scaler = GradScaler(
@@ -199,9 +186,6 @@ if __name__ == "__main__":
         "--mixed-precision",
         action="store_true",
         help="Enable mixed precision training",
-    )
-    parser.add_argument(
-        "--csv_path", type=str, required=True, help="Path to the metadata CSV file"
     )
     parser.add_argument(
         "--full_finetune",
