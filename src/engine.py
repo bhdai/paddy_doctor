@@ -14,6 +14,7 @@ def train_one_epoch(
     device: torch.device,
     scaler: torch.amp.GradScaler,
     mixed_precision: bool,
+    scheduler: torch.optim.lr_scheduler._LRScheduler = None,
 ):
     model.train()
     running_loss = 0.0
@@ -44,6 +45,11 @@ def train_one_epoch(
         # loss.backward()
         scaler.step(optimizer)
         scaler.update()
+
+        if scheduler and isinstance(
+            scheduler, torch.optim.lr_scheduler.CosineAnnealingLR
+        ):
+            scheduler.step()
 
         running_loss += loss.item() * images.size(0)
         _, preds = torch.max(ouputs, 1)

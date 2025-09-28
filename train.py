@@ -41,29 +41,61 @@ def main(args):
     print(f"Number of classes: {num_classes}")
 
     model = PaddyMultimodalNet(num_classes=num_classes, num_varieties=num_varieties)
-    for param in model.backbone.layer4.parameters():
-        param.requires_grad = True
+
+    if args.full_finetune:
+        print("RUNNING IN FULL FINE-TUNING MODE")
+        if args.checkpoint_path and os.path.exists(args.checkpoint_path):
+            print(f"Loading weights from checkpoint: {args.checkpoint_path}")
+            model.load_state_dict(torch.load(args.checkpoint_path, map_location=device))
+        else:
+            print(
+                "WARNING: --checkpoint_path not provided or not found. Start full fine-tune from scratch."
+            )
+
+        print("Unfreezing the entire model for fine-tuning...")
+        for param in model.parameters():
+            param.requires_grad = True
+
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=args.lr_full, weight_decay=1e-4
+        )
+    else:
+        print("RUNNING IN FEATURE EXTRACTION / HEAD-TUNING MODE")
+
+        for param in model.backbone.layer4.parameters():
+            param.requires_grad = True
+
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": model.backbone.layer4.parameters(), "lr": args.lr_backbone},
+                {"params": model.variety_embedding.parameters(), "lr": args.lr_fc},
+                {"params": model.age_processor.parameters(), "lr": args.lr_fc},
+                {"params": model.classifier.parameters(), "lr": args.lr_fc},
+            ],
+            weight_decay=1e-4,
+        )
+
     model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
 
-    optimizer = torch.optim.Adam(
-        [
-            {"params": model.backbone.layer4.parameters(), "lr": args.lr_backbone},
-            {"params": model.variety_embedding.parameters(), "lr": args.lr_fc},
-            {"params": model.age_processor.parameters(), "lr": args.lr_fc},
-            {"params": model.classifier.parameters(), "lr": args.lr_fc},
-        ],
-        weight_decay=1e-4,
-    )
+    if args.full_finetune:
+        print("Using CosineAnnealingLR scheduler.")
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.epochs * len(train_loader),
+            eta_min=1e-7,  # minimum learning rate
+        )
+    else:
+        print("Using ReduceLROnPlateau scheduler.")
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.1,
+            patience=3,
+        )
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=0.1,
-        patience=3,
-    )
-    # Only create scaler if mixed precision is enabled
+    # only create scaler if mixed precision is enabled
     scaler = GradScaler(
         device="cuda" if torch.cuda.is_available() else "cpu",
         enabled=args.mixed_precision,
@@ -83,11 +115,16 @@ def main(args):
             device,
             scaler,
             args.mixed_precision,
+            scheduler,
         )
         val_loss, val_acc = evaluate(
             model, val_loader, criterion, device, args.mixed_precision
         )
-        scheduler.step(val_loss)
+
+        # For ReduceLROnPlateau, step on validation loss
+        if not args.full_finetune:
+            scheduler.step(val_loss)
+        # For CosineAnnealingLR, the step is handled within train_one_epoch
 
         print(f"  Train loss: {train_loss:.4f}, Train acc: {train_acc:.4f}")
         print(f"  Val loss: {val_loss:.4f}, Val acc: {val_acc:.4f}")
@@ -168,6 +205,23 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--csv_path", type=str, required=True, help="Path to the metadata CSV file"
+    )
+    parser.add_argument(
+        "--full_finetune",
+        action="store_true",
+        help="Enable full fine-tuning by unfreezing the entire model",
+    )
+    parser.add_argument(
+        "--checkpoint_path",
+        type=str,
+        default=None,
+        help="Path to a model checkpoint to load for full fine-tuning",
+    )
+    parser.add_argument(
+        "--lr_full",
+        type=float,
+        default=5e-6,
+        help="Learning rate for the entire model for full fine-tuning",
     )
 
     args = parser.parse_args()
