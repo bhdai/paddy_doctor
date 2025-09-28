@@ -69,7 +69,9 @@ def main(args):
         enabled=args.mixed_precision,
     )
 
-    best_val_acc = 0.0
+    best_val_loss = float("inf")
+    patience_counter = 0
+    patience = 5
 
     for epoch in range(args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
@@ -101,16 +103,26 @@ def main(args):
                 }
             )
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
             os.makedirs(args.output_dir, exist_ok=True)
             save_path = os.path.join(args.output_dir, "best_model.pth")
             torch.save(model.state_dict(), save_path)
+            print(f" -> Val loss improved. New best model saved to {save_path}")
+        else:
+            patience_counter += 1
             print(
-                f" -> New best model saved to {save_path} with Val Acc: {best_val_acc:.4f}"
+                f" -> Val loss did not improved. Early stoping counter {patience_counter}/{patience}"
             )
 
-    print(f"\nTraining complete. Best validation accuracy: {best_val_acc:.4f}")
+        if patience_counter >= patience:
+            print(
+                f"\nStoping earlier as validation loss has not improved for {patience} epochs."
+            )
+            break
+
+    print(f"\nTraining complete. Best validation loss: {best_val_loss:.4f}")
     if not args.no_wandb:
         wandb.finish()
 
