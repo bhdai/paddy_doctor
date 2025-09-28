@@ -45,29 +45,33 @@ def main(args):
         for param in model.parameters():
             param.requires_grad = True
 
-        optimizer = torch.optim.Adam(
-            model.parameters(), lr=args.lr_full, weight_decay=args.wd_full
-        )
+        parameter_groups = [
+            {"params": model.backbone.fc.parameters(), "lr": args.lr_head},
+            {"params": model.backbone.layer4.parameters(), "lr": args.lr_body},
+            {"params": model.backbone.layer3.parameters(), "lr": args.lr_body / 2},
+            {"params": model.backbone.layer2.parameters(), "lr": args.lr_body / 3},
+            {"params": model.backbone.layer1.parameters(), "lr": args.lr_early},
+            {"params": model.backbone.conv1.parameters(), "lr": args.lr_early},
+        ]
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer = torch.optim.Adam(parameter_groups, weight_decay=args.wd_full)
+
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
-            T_max=args.epochs * len(train_loader),
-            eta_min=1e-7,  # minimum learning rate
+            max_lr=[group["lr"] for group in optimizer.param_groups],
+            total_steps=args.epochs * len(train_loader),
+            pct_start=0.3,
         )
-        print("Using CosineAnnealingLR scheduler.")
+        print("Using OneCycleLR scheduler.")
     else:
         print("RUNNING IN HEAD-TUNING MODE")
 
         for param in model.backbone.parameters():
             param.requires_grad = False
 
-        for param in model.backbone.layer4.parameters():
-            param.requires_grad = True
-
         optimizer = torch.optim.Adam(
             [
-                {"params": model.backbone.layer4.parameters(), "lr": args.lr_backbone},
-                {"params": model.classifier.parameters(), "lr": args.lr_fc},
+                {"params": model.backbone.fc(), "lr": args.lr_head},
             ],
             weight_decay=args.weight_decay,
         )
@@ -168,7 +172,7 @@ if __name__ == "__main__":
         "--epochs", type=int, default=10, help="Number of training epochs"
     )
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
-    parser.add_argument("--lr_fc", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--lr_head", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--lr_backbone", type=float, default=1e-5, help="Learning rate")
     parser.add_argument(
         "--image_size", type=int, default=224, help="Input image size(height and width)"
@@ -199,10 +203,16 @@ if __name__ == "__main__":
         help="Path to a model checkpoint to load for full fine-tuning",
     )
     parser.add_argument(
-        "--lr_full",
+        "--lr_body",
         type=float,
         default=5e-6,
-        help="Learning rate for the entire model for full fine-tuning",
+        help="Learning rate for the body layers during full fine-tuning",
+    )
+    parser.add_argument(
+        "--lr_early",
+        type=float,
+        default=5e-6,
+        help="Learning rate for the early layers during full fine-tuning",
     )
     parser.add_argument(
         "--wd_full",
