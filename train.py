@@ -57,7 +57,7 @@ def main(args):
             param.requires_grad = True
 
         optimizer = torch.optim.Adam(
-            model.parameters(), lr=args.lr_full, weight_decay=args.weight_decay
+            model.parameters(), lr=args.lr_full, weight_decay=1e-3
         )
     else:
         print("RUNNING IN FEATURE EXTRACTION / HEAD-TUNING MODE")
