@@ -2,9 +2,10 @@ import os
 import torch
 import argparse
 import torch.nn as nn
+import pandas as pd
 from torch.amp import GradScaler, autocast
 from src.dataset import PaddyDataloader
-from src.model import PaddyResNet
+from src.model import PaddyMultimodalNet
 from src.engine import train_one_epoch, evaluate
 import wandb
 
@@ -16,8 +17,20 @@ def main(args):
     print(f"Using device: {device}")
     print(f"Using mixed precision: {args.mixed_precision}")
 
+    print("Prepare metadata and data split...")
+    metadata_df = pd.read_csv(args.csv_path)
+
+    # map each variety to an integer
+    varieties = metadata_df["variety"].unique()
+    variety_map = {v: i for i, v in enumerate(varieties)}
+    metadata_df["variety_idx"] = metadata_df["variety"].map(variety_map)
+    num_varieties = len(varieties)
+    # set image_id as index for fast lookups
+    metadata_df.set_index("image_id", inplace=True)
+
     data = PaddyDataloader(
-        data_dir=args.data_dir,
+        processed_data_dir=args.data_dir,
+        metadata_df=metadata_df,
         batch_size=args.batch_size,
         img_size=args.image_size,
         num_workers=args.num_workers,
@@ -27,16 +40,23 @@ def main(args):
     num_classes = data.num_classes
     print(f"Number of classes: {num_classes}")
 
-    model = PaddyResNet(num_classes=num_classes).to(device)
+    model = PaddyMultimodalNet(num_classes=num_classes, num_varieties=num_varieties)
+    for param in model.backbone.layer4.parameters():
+        param.requires_grad = True
+    model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
 
     optimizer = torch.optim.Adam(
         [
-            {"params": model.base_model.layer4.parameters(), "lr": args.lr_backbone},
-            {"params": model.base_model.fc.parameters(), "lr": args.lr_fc},
-        ]
+            {"params": model.backbone.layer4.parameters(), "lr": args.lr_backbone},
+            {"params": model.variety_embedding.parameters(), "lr": args.lr_fc},
+            {"params": model.age_processor.parameters(), "lr": args.lr_fc},
+            {"params": model.classifier.parameters(), "lr": args.lr_fc},
+        ],
+        weight_decay=1e-4,
     )
+
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="min",
@@ -133,6 +153,9 @@ if __name__ == "__main__":
         "--mixed-precision",
         action="store_true",
         help="Enable mixed precision training",
+    )
+    parser.add_argument(
+        "--csv_path", type=str, required=True, help="Path to the metadata CSV file"
     )
 
     args = parser.parse_args()
