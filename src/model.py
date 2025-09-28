@@ -10,4 +10,4 @@ class PaddyResNet(nn.Module):
         self.backbone.fc = nn.Linear(in_features, num_classes)
 
     def forward(self, x):
-        return self.backbone.fc(x)
+        return self.backbone(x)

@@ -68,6 +68,9 @@ def main(args):
 
         for param in model.backbone.parameters():
             param.requires_grad = False
+        
+        for param in model.backbone.fc.parameters():
+            param.requires_grad = True
 
         optimizer = torch.optim.Adam(
             [
@@ -173,7 +176,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--lr_head", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--lr_backbone", type=float, default=1e-5, help="Learning rate")
     parser.add_argument(
         "--image_size", type=int, default=224, help="Input image size(height and width)"
     )

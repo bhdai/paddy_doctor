@@ -34,8 +34,8 @@ def train_one_epoch(
             enabled=mixed_precision,
         ):
             # forward pass
-            ouputs = model(images)
-            loss = loss_fn(ouputs, labels)
+            outputs = model(images)
+            loss = loss_fn(outputs, labels)
 
         # backward pass and optim
         optimizer.zero_grad()
@@ -44,13 +44,13 @@ def train_one_epoch(
         scaler.step(optimizer)
         scaler.update()
 
-        if scheduler and isinstance(
-            scheduler, torch.optim.lr_scheduler.CosineAnnealingLR
+        if scheduler and not isinstance(
+            scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
         ):
             scheduler.step()
 
         running_loss += loss.item() * images.size(0)
-        _, preds = torch.max(ouputs, 1)
+        _, preds = torch.max(outputs, 1)
         correct += (preds == labels).sum().item()
         total += labels.size(0)
 
