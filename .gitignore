@@ -5,3 +5,7 @@ output/
 __pycache__/
 
 wandb/
+
+models/
+
+submission.csv

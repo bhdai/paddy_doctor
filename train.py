@@ -15,6 +15,8 @@ from PIL import Image
 import wandb
 import timm
 from timm.scheduler.cosine_lr import CosineLRScheduler
+from timm.data.mixup import Mixup
+from timm.loss.cross_entropy import SoftTargetCrossEntropy
 
 
 def main(args):
@@ -96,7 +98,18 @@ def main(args):
             cycle_limit=1,
         )
 
-        criterion = nn.CrossEntropyLoss()
+        mixup_fc = Mixup(
+            mixup_alpha=0.4,
+            cutmix_alpha=0.5,
+            prob=0.25,
+            switch_prob=0.5,
+            mode="batch",
+            label_smoothing=0.05,
+            num_classes=len(class_map),
+        )
+
+        train_criterion = SoftTargetCrossEntropy()
+        val_criterion = nn.CrossEntropyLoss()
 
         scaler = GradScaler(
             device="cuda" if torch.cuda.is_available() else "cpu",
@@ -112,16 +125,17 @@ def main(args):
             train_loss, train_acc, num_updates = train_one_epoch(
                 model,
                 train_loader,
-                criterion,
+                train_criterion,
                 optimizer,
                 device,
                 scaler,
                 args.mixed_precision,
                 scheduler,
                 num_updates,
+                mixup_fc,
             )
             val_loss, val_acc = evaluate(
-                model, val_loader, criterion, device, args.mixed_precision
+                model, val_loader, val_criterion, device, args.mixed_precision
             )
 
             scheduler.step(epoch + 1)  # adjust the lr for the next epoch

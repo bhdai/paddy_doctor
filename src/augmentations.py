@@ -35,3 +35,15 @@ def get_val_transforms(image_size: int):
             ToTensorV2(),
         ]
     )
+
+
+def get_tta_transforms(image_size: int):
+    return A.Compose(
+        [
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.5),
+            A.Resize(height=image_size, width=image_size),
+            A.Normalize(),
+            ToTensorV2(),
+        ]
+    )

@@ -18,6 +18,7 @@ def train_one_epoch(
     mixed_precision: bool,
     scheduler: Optional[CosineLRScheduler],
     num_updates: int,
+    mixup_fn=None,
 ) -> Tuple[float, float, int]:
     model.train()
     running_loss = 0.0
@@ -32,8 +33,11 @@ def train_one_epoch(
             labels.to(device),
         )
 
+        if mixup_fn is not None:
+            images, labels = mixup_fn(images, labels)
+
         with autocast(
-            device_type="cuda" if torch.cuda.is_available() else "cpu",
+            device_type=device.type,
             enabled=mixed_precision,
         ):
             # forward pass
@@ -67,7 +71,11 @@ def train_one_epoch(
 
         running_loss += loss.item() * images.size(0)
         _, preds = torch.max(outputs, 1)
-        correct += (preds == labels).sum().item()
+        if labels.ndim == 2:  # if label are soft fine the argmax
+            true_labels = labels.argmax(dim=1)
+        else:
+            true_labels = labels
+        correct += (preds == true_labels).sum().item()
         total += labels.size(0)
 
         progress_bar.set_postfix(loss=running_loss / total, acc=correct / total)
@@ -94,7 +102,7 @@ def evaluate(
         for images, labels in progress_bar:
             images, labels = images.to(device), labels.to(device)
             with autocast(
-                device_type="cuda" if torch.cuda.is_available() else "cpu",
+                device_type=device.type,
                 enabled=mixed_precision,
             ):
                 outputs = model(images)
@@ -105,3 +113,61 @@ def evaluate(
             total += labels.size(0)
             progress_bar.set_postfix(loss=running_loss / total, acc=correct / total)
     return running_loss / total, correct / total
+
+
+def evaluate_with_tta(
+    model: nn.Module,
+    dataloader: DataLoader,
+    loss_fn: nn.Module,
+    device: torch.device,
+    mixed_precision: bool,
+    num_tta: int = 5,
+    eps: float = 1e-12,
+) -> Tuple[float, float]:
+    model.eval()
+    sum_probs = None
+    targets = None
+
+    with torch.no_grad():
+        for t in tqdm(range(num_tta), desc=f"TTA Evaluation ({num_tta} runs)"):
+            run_preds = []
+            run_targets = []
+
+            for images, labels in dataloader:
+                images = images.to(device)
+                labels = labels.to(device)
+
+                with autocast(
+                    device_type=device.type,
+                    enabled=mixed_precision,
+                ):
+                    outputs = model(images)
+                    probs = torch.softmax(outputs, dim=1)
+
+                run_preds.append(probs.float())
+                if targets is None:
+                    run_targets.append(labels)
+
+            run_preds = torch.cat(run_preds, dim=0)
+
+            if sum_probs is None:
+                sum_probs = run_preds
+            else:
+                sum_probs = sum_probs + run_preds
+
+            if targets is None:
+                targets = torch.cat(run_targets, dim=0).to(device)
+
+        avg_preds = sum_probs / float(num_tta)
+
+        avg_preds = avg_preds.clamp(min=eps)
+
+        final_class_preds = torch.argmax(avg_preds, dim=1)
+        correct = (final_class_preds == targets).sum().item()
+        total = targets.size(0)
+        final_acc = correct / total
+
+        log_probs = torch.log(avg_preds)
+        final_loss = loss_fn(log_probs, targets).item()
+
+    return final_loss, final_acc
