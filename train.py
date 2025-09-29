@@ -4,155 +4,166 @@ import argparse
 import torch.nn as nn
 import pandas as pd
 from torch.amp import GradScaler, autocast
-from src.dataset import PaddyDataloader
-from src.model import PaddyResNet
+from torch.utils.data import DataLoader
+from src.dataset import PaddyDataset
+from src.model import TimmPaddyNet
 from src.engine import train_one_epoch, evaluate
+from src.augmentations import get_train_transforms, get_val_transforms
+from sklearn.model_selection import StratifiedKFold
+import imagehash
+from PIL import Image
 import wandb
+import timm
+from timm.scheduler.cosine_lr import CosineLRScheduler
 
 
 def main(args):
-    if not args.no_wandb:
-        wandb.init(project="paddy_doctor", config=args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     print(f"Using mixed precision: {args.mixed_precision}")
 
-    data = PaddyDataloader(
-        data_dir=args.data_dir,
-        batch_size=args.batch_size,
-        img_size=args.image_size,
-        num_workers=args.num_workers,
+    df = pd.read_csv(args.csv_path)
+
+    df["path"] = df.apply(
+        lambda row: os.path.join(args.data_dir, row["label"], row["image_id"]), axis=1
     )
 
-    train_loader, val_loader = data.get_loaders()
-    num_classes = data.num_classes
-    print(f"Number of classes: {num_classes}")
+    print(f"Original dataset size: {len(df)}")
+    df["hash"] = df["path"].apply(lambda path: imagehash.phash(Image.open(path)))
+    df = df.drop_duplicates(subset="hash", keep="first").reset_index(drop=True)
+    print(f"Dataset size after duplicate removal: {len(df)}")
 
-    model = PaddyResNet(num_classes=num_classes)
-    model = model.to(device)
+    class_map = {label: i for i, label in enumerate(df["label"].unique())}
+    df["target"] = df["label"].map(class_map)
 
-    if args.full_finetune:
-        print("RUNNING IN FULL FINE-TUNING MODE")
-        if args.checkpoint_path and os.path.exists(args.checkpoint_path):
-            print(f"Loading weights from checkpoint: {args.checkpoint_path}")
-            model.load_state_dict(torch.load(args.checkpoint_path, map_location=device))
-        else:
-            print(
-                "WARNING: --checkpoint_path not provided or not found. Start full fine-tune from scratch."
-            )
+    skf = StratifiedKFold(n_splits=args.num_folds, shuffle=True, random_state=42)
 
-        print("Unfreezing the entire model for fine-tuning...")
-        for param in model.parameters():
-            param.requires_grad = True
+    for fold, (_, val_idx) in enumerate(skf.split(X=df, y=df["target"])):
+        df.loc[val_idx, "fold"] = fold
 
-        parameter_groups = [
-            {"params": model.backbone.fc.parameters(), "lr": args.lr_head},
-            {"params": model.backbone.layer4.parameters(), "lr": args.lr_body},
-            {"params": model.backbone.layer3.parameters(), "lr": args.lr_body / 2},
-            {"params": model.backbone.layer2.parameters(), "lr": args.lr_body / 3},
-            {"params": model.backbone.layer1.parameters(), "lr": args.lr_early},
-            {"params": model.backbone.conv1.parameters(), "lr": args.lr_early},
-        ]
+    all_fold_scores = []
 
-        optimizer = torch.optim.Adam(parameter_groups, weight_decay=args.wd_full)
-
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer,
-            max_lr=[group["lr"] for group in optimizer.param_groups],
-            total_steps=args.epochs * len(train_loader),
-            pct_start=0.3,
-        )
-        print("Using OneCycleLR scheduler.")
-    else:
-        print("RUNNING IN HEAD-TUNING MODE")
-
-        for param in model.backbone.parameters():
-            param.requires_grad = False
-        
-        for param in model.backbone.fc.parameters():
-            param.requires_grad = True
-
-        optimizer = torch.optim.Adam(
-            [
-                {"params": model.backbone.fc.parameters(), "lr": args.lr_head},
-            ],
-            weight_decay=args.weight_decay,
-        )
-
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=0.1,
-            patience=6,
-        )
-        print("Using ReduceLROnPlateau scheduler.")
-
-    criterion = nn.CrossEntropyLoss()
-
-    # only create scaler if mixed precision is enabled
-    scaler = GradScaler(
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        enabled=args.mixed_precision,
-    )
-
-    best_val_loss = float("inf")
-    patience_counter = 0
-
-    for epoch in range(args.epochs):
-        print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
-        train_loss, train_acc = train_one_epoch(
-            model,
-            train_loader,
-            criterion,
-            optimizer,
-            device,
-            scaler,
-            args.mixed_precision,
-            scheduler,
-        )
-        val_loss, val_acc = evaluate(
-            model, val_loader, criterion, device, args.mixed_precision
-        )
-
-        if not args.full_finetune:
-            scheduler.step(val_loss)
-
-        print(f"  Train loss: {train_loss:.4f}, Train acc: {train_acc:.4f}")
-        print(f"  Val loss: {val_loss:.4f}, Val acc: {val_acc:.4f}")
+    for fold in range(args.num_folds):
+        print(f"\nFOLD {fold}")
 
         if not args.no_wandb:
-            wandb.log(
-                {
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_loss": val_loss,
-                    "val_acc": val_acc,
-                    "epoch": epoch + 1,
-                }
+            wandb.init(
+                project="paddy_doctor",
+                name=f"fold_{fold}_{args.model_name}",
+                config=args,
             )
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            os.makedirs(args.output_dir, exist_ok=True)
-            save_path = os.path.join(args.output_dir, "best_model.pth")
-            torch.save(model.state_dict(), save_path)
-            print(f" -> Val loss improved. New best model saved to {save_path}")
-        else:
-            patience_counter += 1
-            print(
-                f" -> Val loss did not improved. Early stoping counter {patience_counter}/{args.patience}"
+        train_df = df[df["fold"] != fold]
+        val_df = df[df["fold"] == fold]
+
+        train_augs = get_train_transforms(image_size=args.image_size)
+        val_augs = get_val_transforms(image_size=args.image_size)
+
+        train_dataset = PaddyDataset(df=train_df, transform=train_augs)
+        val_dataset = PaddyDataset(df=val_df, transform=val_augs)
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+        )
+
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+        )
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = TimmPaddyNet(model_name=args.model_name, num_classes=len(class_map))
+        model.to(device)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.wc,
+        )
+
+        scheduler = CosineLRScheduler(
+            optimizer,
+            t_initial=args.epochs,
+            cycle_decay=0.1,
+            lr_min=1e-6,
+            warmup_t=3,
+            warmup_lr_init=1e-5,
+            t_in_epochs=True,
+            cycle_limit=1,
+        )
+
+        criterion = nn.CrossEntropyLoss()
+
+        scaler = GradScaler(
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            enabled=args.mixed_precision,
+        )
+
+        best_val_loss = float("inf")
+        patience_counter = 0
+        num_updates = 0
+
+        for epoch in range(args.epochs):
+            print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
+            train_loss, train_acc, num_updates = train_one_epoch(
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                device,
+                scaler,
+                args.mixed_precision,
+                scheduler,
+                num_updates,
+            )
+            val_loss, val_acc = evaluate(
+                model, val_loader, criterion, device, args.mixed_precision
             )
 
-        if patience_counter >= args.patience:
-            print(
-                f"\nStoping earlier as validation loss has not improved for {args.patience} epochs."
-            )
-            break
+            scheduler.step(epoch + 1)  # adjust the lr for the next epoch
 
-    print(f"\nTraining complete. Best validation loss: {best_val_loss:.4f}")
-    if not args.no_wandb:
-        wandb.finish()
+            print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
+            print(f"  Val Loss  : {val_loss:.4f}   | Val Acc  : {val_acc:.4f}")
+
+            if not args.no_wandb:
+                wandb.log(
+                    {
+                        "train_loss": train_loss,
+                        "train_acc": train_acc,
+                        "val_loss": val_loss,
+                        "val_acc": val_acc,
+                        "epoch": epoch,
+                    }
+                )
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                os.makedirs(args.output_dir, exist_ok=True)
+                save_path = os.path.join(args.output_dir, f"best_model_fold_{fold}.pth")
+                torch.save(model.state_dict(), save_path)
+                print(f" -> Val loss improved. Model saved to {save_path}")
+            else:
+                patience_counter += 1
+                print(
+                    f" -> Val loss did not improve. Early stopping counter {patience_counter}/{args.patience}"
+                )
+
+            if patience_counter >= args.patience:
+                print(f"Stopping early for fold {fold}")
+                break
+
+        all_fold_scores.append(1 - best_val_loss)
+        if not args.no_wandb:
+            wandb.finish()
+
+    print("\n===== Cross-Validation Complete =====")
+    print(f"Scores for each fold: {all_fold_scores}")
+    print(f"Average CV Score: {sum(all_fold_scores) / len(all_fold_scores):.4f}")
 
 
 if __name__ == "__main__":
@@ -166,6 +177,12 @@ if __name__ == "__main__":
         help="Path to the dataset directory ('.data/paddy_data')",
     )
     parser.add_argument(
+        "--csv_path",
+        type=str,
+        required=True,
+        help="Path to the CSV file containing image paths and labels",
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default="./output/saved_models",
@@ -175,7 +192,7 @@ if __name__ == "__main__":
         "--epochs", type=int, default=10, help="Number of training epochs"
     )
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
-    parser.add_argument("--lr_head", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument(
         "--image_size", type=int, default=224, help="Input image size(height and width)"
     )
@@ -189,41 +206,10 @@ if __name__ == "__main__":
         "--no_wandb", action="store_true", help="Disable Weights & Biases logging"
     )
     parser.add_argument(
-        "--mixed-precision",
-        action="store_true",
-        help="Enable mixed precision training",
+        "--mixed-precision", action="store_true", help="Enable mixed precision training"
     )
     parser.add_argument(
-        "--full_finetune",
-        action="store_true",
-        help="Enable full fine-tuning by unfreezing the entire model",
-    )
-    parser.add_argument(
-        "--checkpoint_path",
-        type=str,
-        default=None,
-        help="Path to a model checkpoint to load for full fine-tuning",
-    )
-    parser.add_argument(
-        "--lr_body",
-        type=float,
-        default=5e-6,
-        help="Learning rate for the body layers during full fine-tuning",
-    )
-    parser.add_argument(
-        "--lr_early",
-        type=float,
-        default=5e-6,
-        help="Learning rate for the early layers during full fine-tuning",
-    )
-    parser.add_argument(
-        "--wd_full",
-        type=float,
-        default=1e-3,
-        help="Weight decay for the optimizer during full fine-tuning",
-    )
-    parser.add_argument(
-        "--weight_decay",
+        "--wc",
         type=float,
         default=1e-4,
         help="Weight decay for the optimizer",
@@ -233,6 +219,18 @@ if __name__ == "__main__":
         type=int,
         default=5,
         help="Patience for early stopping",
+    )
+    parser.add_argument(
+        "--num_folds",
+        type=int,
+        default=5,
+        help="Number of folds for cross-validation",
+    )
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="resnet26d",
+        help="Model architecture from timm",
     )
 
     args = parser.parse_args()

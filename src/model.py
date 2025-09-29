@@ -1,13 +1,32 @@
 import torch.nn as nn
-from torchvision import models
+import timm
 
 
-class PaddyResNet(nn.Module):
-    def __init__(self, num_classes: int):
+class TimmPaddyNet(nn.Module):
+    def __init__(
+        self,
+        model_name: str,
+        num_classes: int,
+        pretrained: bool = True,
+        dropout: float = 0.5,
+    ):
         super().__init__()
-        self.backbone = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-        in_features = self.backbone.fc.in_features  # 2048
-        self.backbone.fc = nn.Linear(in_features, num_classes)
+
+        # setting num_classes = 0 to remove the original classifier head
+        self.backbone = timm.create_model(
+            model_name, pretrained=pretrained, num_classes=0
+        )
+
+        in_features = self.backbone.num_features
+
+        self.classifier = nn.Sequential(
+            nn.BatchNorm1d(in_features),
+            nn.Linear(in_features, 512),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(512, num_classes),
+        )
 
     def forward(self, x):
-        return self.backbone(x)
+        features = self.backbone(x)
+        return self.classifier(features)
